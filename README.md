@@ -1,0 +1,72 @@
+# 🐰🥕 Carrot Snatcher
+
+A browser-based arcade maze game. Play a bunny loose in a hedge maze and race a 60-second clock to snatch as many carrots as you can.
+
+Built as a single, dependency-free HTML file - plain JavaScript, Canvas, and the Web Audio API. No framework, no build step.
+
+## The origin story
+
+This game was designed by my 7-year-old daughter. Over dinner one evening, she described exactly how she wanted it to play - a bunny finding its way through a maze to collect carrots against a timer, with a special glowing bonus carrot in the middle - and then drew the whole thing out:
+
+![The original game sketch, drawn by my daughter](assets/sketch.jpg)
+
+Her sketch already had every core mechanic in it: the **timer** ("5 minits", boxed at the top), a **winding maze with looping paths**, **carrots scattered along the routes** as little orange dashes, **bunnies** placed in the maze, **arrows** showing how you move - and, right in the centre, the **big bonus carrot drawn with sparkle lines** to show that it glows and is worth chasing. This project is just that sketch, brought to the screen. 🥕
+
+And like any good product owner, the moment the first version was up and running, the change requests started rolling in - fast 🚀 _"Can I pick different bunnies?"_ _"Can it have music?"_ _"How do I change my bunny after the game finishes?"_ Most of the features here exist because she asked for them on the spot. 🐰
+
+## Gameplay
+
+- **Objective:** collect as many carrots as possible before the timer runs out.
+- **Fresh maze every round:** each game generates a new maze (recursive-backtracker carving with extra walls removed for Pac-Man-style loops), so no two runs are the same.
+- **The golden carrot:** a larger, glowing bonus carrot worth **double points**. It spawns far from you, favours dead-ends, and relocates every few seconds if you don't reach it in time - a risk-reward chase for a higher score.
+- **Two numbers that matter:** _carrots collected_ (the raw count) and _score_ (points). A normal carrot is 1 point; a golden one is 2, so your score can run ahead of your carrot count. The leaderboard ranks by score.
+
+## Controls
+
+- **Desktop:** Arrow keys or `WASD`.
+- **Mobile:** an on-screen directional pad appears below the maze automatically.
+
+## Characters
+
+Pick from six coloured bunnies before you start - Snowball, Hazel, Smokey, Honey, Blossom, and Midnight. Your choice is shown next to your name on the leaderboard, and you can switch bunnies between rounds.
+
+## Leaderboard
+
+After each round you can add your score to the leaderboard, with your chosen bunny shown next to your name and the board ranked by score.
+
+Note the current limitation: the leaderboard is **local to your session only**. Scores are held while the page is open but reset on reload, and they are **not shared between players or devices** yet. Persistent, shared scoring is the next thing on the roadmap (see below).
+
+## Project structure
+
+```
+.
+├── index.html        # the entire game (markup, styles, and JS)
+└── assets/
+    └── sketch.jpg    # the original sketch
+```
+
+## Running locally
+
+No build step and no server required - just open the file:
+
+```
+open index.html
+```
+
+## Deploying
+
+Deploys to [Netlify](https://www.netlify.com/) as a static site. Connect the repo (or drag the folder into Netlify Drop) - no build command required.
+
+## Roadmap
+
+- **Persistent, shared leaderboard.** Replace the session-only board with server-side storage via a small Netlify Function backed by [Netlify Blobs](https://docs.netlify.com/blobs/overview/), so scores persist and every player sees the same board.
+
+## Tech notes
+
+- **Rendering:** HTML Canvas. The bunny and maze are drawn as vector shapes, so bunnies can be tinted any colour.
+- **Movement:** tile-locked and frame-rate independent - the bunny steps toward the next tile centre and is clamped so it can never overshoot, which keeps wall collisions and carrot pickups accurate even on lower-framerate devices.
+- **Audio:** a procedurally generated background loop plus sound effects, all synthesised at runtime with the Web Audio API (no audio files). Toggle with the speaker button.
+
+---
+
+Made for fun ❤️
