@@ -155,6 +155,17 @@
     font-size: 30px;
     color: var(--hedge-dark);
   }
+  /* fixed (not absolute) so the confetti stays anchored to the viewport and does not
+     scroll away with the end-screen card on short screens; pointer-events:none keeps
+     card/leaderboard scrolling working through it */
+  .confetti-bg { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  #endScreen .card { position: relative; z-index: 1; }
+  @keyframes pop-in {
+    0%   { transform: scale(0.4); opacity: 0; }
+    60%  { transform: scale(1.08); opacity: 1; }
+    100% { transform: scale(1); opacity: 1; }
+  }
+  .card.win h2 { animation: pop-in 0.5s ease-out both; }
   .card p { margin: 8px 0; color: var(--ink-soft); font-weight: 600; line-height: 1.45; }
   .legend {
     display: flex;
@@ -334,6 +345,7 @@
           <div><span class="big">✨🥕</span>Golden · 2 pts</div>
         </div>
         <p>The <b>golden carrot</b> glows, hides far away, and keeps moving — snag it fast for double points.</p>
+        <p>Clear the whole maze for a 🎉 <b>clean-sweep bonus</b>!</p>
         <p style="margin-bottom:2px"><b>Pick your bunny</b></p>
         <div class="chooser" id="chooser"></div>
         <button class="btn" id="startBtn">Start hopping</button>
@@ -341,6 +353,7 @@
     </div>
 
     <div class="overlay hidden" id="endScreen">
+      <canvas class="confetti-bg" id="confettiCanvas" aria-hidden="true"></canvas>
       <div class="card">
         <h2>⏰ Time's up!</h2>
         <div class="bigscore"><span id="finalScore">0</span> pts<span class="cs" id="finalCarrots">0 carrots collected</span></div>
@@ -378,6 +391,7 @@
   const W = COLS * TILE, H = ROWS * TILE;
   const GAME_SECONDS = 60;
   const CARROT_PTS = 1, BONUS_PTS = 2;
+  const CLEAR_BONUS = 50;              // bonus points for snatching every carrot in the maze
   const BONUS_MOVE_EVERY = 6.5;        // golden carrot relocates if untaken
   const BONUS_RESPAWN = 1.6;           // delay after collecting
   const SPEED = 5.4 * TILE;            // px/sec
@@ -451,6 +465,10 @@
   let running = false, lastTs = 0;
   let hopPhase = 0;                 // bounce animation
   let sparkle = [];                 // little collection puffs
+  let confetti = [];                // clean-sweep celebration pieces (game canvas)
+  let swept = false;                // clean sweep already fired this round
+  let sweptWin = false;             // this round achieved a clean sweep (remembered for the end screen)
+  let sweepBanner = 0;              // life timer for the floating "CLEAN SWEEP!" text
   let muted = false;
 
   const key = (x, y) => x + ',' + y;
@@ -465,6 +483,7 @@
     bunny = { px: 1 * TILE + TILE/2, py: 1 * TILE + TILE/2, dir: null, next: null, tx: 1, ty: 1 };
     score = 0; eaten = 0; timeLeft = GAME_SECONDS;
     sparkle = [];
+    confetti = []; swept = false; sweptWin = false; sweepBanner = 0;
     bonus = null; bonusTimer = BONUS_RESPAWN;
     updateHud();
   }
@@ -526,6 +545,69 @@
   const sndCarrot = () => beep(660, 0.09, 'square', 0.08);
   const sndBonus  = () => { beep(880, 0.12, 'triangle', 0.14); setTimeout(() => beep(1180, 0.14, 'triangle', 0.14), 90); };
   const sndEnd    = () => { beep(392, 0.18, 'sine', 0.14); setTimeout(() => beep(294, 0.28, 'sine', 0.14), 160); };
+
+  // A short buffer of white noise, used for the pop crack and the fizz tail.
+  function noiseBuffer(dur) {
+    const len = Math.max(1, (actx.sampleRate * dur) | 0);
+    const buf = actx.createBuffer(1, len, actx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+    return buf;
+  }
+
+  // Party-popper pop for a clean sweep: a pitch-dropping pop with a noisy crack,
+  // a highpassed fizz tail, and a quick rising sparkle arpeggio.
+  function sndPartyPop() {
+    if (muted) return;
+    try {
+      ensureAudio();
+      const t0 = actx.currentTime;
+
+      // Pop: sine with a fast downward pitch sweep.
+      const o = actx.createOscillator(), g = actx.createGain();
+      o.type = 'sine';
+      o.frequency.setValueAtTime(700, t0);
+      o.frequency.exponentialRampToValueAtTime(160, t0 + 0.06);
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.exponentialRampToValueAtTime(0.34, t0 + 0.008);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.14);
+      o.connect(g); g.connect(sfxGain);
+      o.start(t0); o.stop(t0 + 0.16);
+
+      // Party-popper crack: a short bandpassed noise burst.
+      const crack = actx.createBufferSource(); crack.buffer = noiseBuffer(0.06);
+      const bp = actx.createBiquadFilter(); bp.type = 'bandpass';
+      bp.frequency.value = 900; bp.Q.value = 6;
+      const cg = actx.createGain();
+      cg.gain.setValueAtTime(0.5, t0);
+      cg.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.06);
+      crack.connect(bp); bp.connect(cg); cg.connect(sfxGain);
+      crack.start(t0); crack.stop(t0 + 0.07);
+
+      // Fizz: highpassed white-noise tail decaying over ~0.9s.
+      const fizz = actx.createBufferSource(); fizz.buffer = noiseBuffer(0.9);
+      const hp = actx.createBiquadFilter(); hp.type = 'highpass';
+      hp.frequency.value = 6000;
+      const fg = actx.createGain();
+      fg.gain.setValueAtTime(0.0001, t0 + 0.02);
+      fg.gain.exponentialRampToValueAtTime(0.14, t0 + 0.09);
+      fg.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.95);
+      fizz.connect(hp); hp.connect(fg); fg.connect(sfxGain);
+      fizz.start(t0 + 0.02); fizz.stop(t0 + 1.0);
+
+      // Sparkle: rising triangle arpeggio C5-E5-G5-C6.
+      [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => {
+        const st = t0 + 0.12 + i * 0.08;
+        const so = actx.createOscillator(), sg = actx.createGain();
+        so.type = 'triangle'; so.frequency.value = f;
+        sg.gain.setValueAtTime(0.0001, st);
+        sg.gain.exponentialRampToValueAtTime(0.16, st + 0.02);
+        sg.gain.exponentialRampToValueAtTime(0.0001, st + 0.22);
+        so.connect(sg); sg.connect(sfxGain);
+        so.start(st); so.stop(st + 0.24);
+      });
+    } catch (e) {}
+  }
 
   // ---------- Background music (procedural, looping) ----------
   // A bouncy little garden tune: melody over a simple bass, scheduled with lookahead.
@@ -668,6 +750,10 @@
     for (const s of sparkle) { s.life -= dt; s.r += dt * 40; }
     sparkle = sparkle.filter(s => s.life > 0);
 
+    // clean-sweep celebration
+    if (confetti.length) updateGameConfetti(dt);
+    if (sweepBanner > 0) sweepBanner = Math.max(0, sweepBanner - dt);
+
     // timer
     timeLeft -= dt;
     if (timeLeft <= 0) { timeLeft = 0; endGame(); }
@@ -738,10 +824,80 @@
       bonus = null; bonusTimer = BONUS_RESPAWN;
       updateHud();
     }
+    if (running && !swept && carrots.size === 0) triggerCleanSweep();
   }
 
   function addSparkle(tx, ty, color, big) {
     sparkle.push({ x: tx*TILE + TILE/2, y: ty*TILE + TILE/2, r: big ? 8 : 4, life: 0.45, color, big });
+  }
+
+  // ---------- Clean-sweep celebration ----------
+  const CONFETTI_COLORS = ['#ff4d4d', '#ffd633', '#4dd2ff', '#7CFC00', '#ff66cc', '#a066ff', '#ff9a3d'];
+
+  // One particle model shared by the on-board burst and the end-screen rain.
+  // gentle=false fountains upward (a bunny party); gentle=true drifts downward.
+  function makeConfetti(x, y, gentle) {
+    const color = CONFETTI_COLORS[(Math.random() * CONFETTI_COLORS.length) | 0];
+    const shape = Math.random() < 0.5 ? 'rect' : 'circle';
+    if (gentle) {
+      return {
+        x, y,
+        vx: (Math.random() - 0.5) * 40,
+        vy: 40 + Math.random() * 70,
+        w: 6 + Math.random() * 7, h: 8 + Math.random() * 8,
+        color, rot: Math.random() * Math.PI * 2, vr: (Math.random() - 0.5) * 6,
+        life: 4 + Math.random() * 3, shape,
+      };
+    }
+    const ang = -Math.PI / 2 + (Math.random() - 0.5) * 1.7;   // spray upward
+    const spd = 150 + Math.random() * 230;
+    return {
+      x, y,
+      vx: Math.cos(ang) * spd,
+      vy: Math.sin(ang) * spd,
+      w: 5 + Math.random() * 5, h: 7 + Math.random() * 7,
+      color, rot: Math.random() * Math.PI * 2, vr: (Math.random() - 0.5) * 12,
+      life: 1.6 + Math.random() * 1.2, shape,
+    };
+  }
+
+  function drawConfettiPiece(c, p) {
+    c.save();
+    c.translate(p.x, p.y);
+    c.rotate(p.rot);
+    c.fillStyle = p.color;
+    if (p.shape === 'circle') {
+      c.beginPath();
+      c.ellipse(0, 0, p.w / 2, p.h / 2, 0, 0, Math.PI * 2);
+      c.fill();
+    } else {
+      c.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+    }
+    c.restore();
+  }
+
+  function burstConfetti() {
+    for (let i = 0; i < 90; i++) confetti.push(makeConfetti(bunny.px, bunny.py, false));
+  }
+
+  function updateGameConfetti(dt) {
+    const G = 900;   // game-space gravity (px/s^2)
+    for (const p of confetti) {
+      p.vy += G * dt;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.rot += p.vr * dt;
+      p.life -= dt;
+    }
+    confetti = confetti.filter(p => p.life > 0);
+  }
+
+  function triggerCleanSweep() {
+    swept = true; sweptWin = true;
+    score += CLEAR_BONUS; updateHud();
+    sndPartyPop();
+    burstConfetti();
+    sweepBanner = 2.0;
   }
 
   // ---------- Render ----------
@@ -809,6 +965,33 @@
 
     // bunny
     drawBunny();
+
+    // clean-sweep confetti, over the now-empty maze but under the vignette
+    for (const p of confetti) {
+      ctx.globalAlpha = Math.min(1, p.life);
+      drawConfettiPiece(ctx, p);
+    }
+    ctx.globalAlpha = 1;
+
+    // floating "CLEAN SWEEP!" banner: pops in (scale) then fades out
+    if (sweepBanner > 0) {
+      const elapsed = 2.0 - sweepBanner;
+      const pop = Math.min(1, elapsed / 0.22);
+      const scale = 0.5 + 0.5 * (1 - Math.pow(1 - pop, 3));
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, sweepBanner / 0.5);
+      ctx.translate(W / 2, H * 0.32);
+      ctx.scale(scale, scale);
+      ctx.font = "700 " + (TILE | 0) + "px 'Fredoka', sans-serif";
+      ctx.lineWidth = 6;
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = 'rgba(20,40,25,0.85)';
+      ctx.fillStyle = getVar('--gold');
+      const msg = '🎉 CLEAN SWEEP! +' + CLEAR_BONUS;
+      ctx.strokeText(msg, 0, 0);
+      ctx.fillText(msg, 0, 0);
+      ctx.restore();
+    }
 
     // vignette
     const vg = ctx.createRadialGradient(W/2, H/2, H*0.35, W/2, H/2, H*0.72);
@@ -927,6 +1110,8 @@
   const endScreen = document.getElementById('endScreen');
 
   function startGame() {
+    stopEndConfetti();
+    endScreen.querySelector('.card').classList.remove('win');
     resetGame();
     startScreen.classList.add('hidden');
     endScreen.classList.add('hidden');
@@ -936,21 +1121,34 @@
     requestAnimationFrame(loop);
   }
 
+  const endCard = endScreen.querySelector('.card');
+  const endTitle = endCard.querySelector('h2');
+
   let lastResult = null;
   function endGame() {
     running = false;
     stopMusic();
-    sndEnd();
+    if (sweptWin) {
+      endTitle.textContent = '🎉 Clean sweep!';
+      endCard.classList.add('win');
+      document.getElementById('endMsg').textContent =
+        'Every carrot snatched — +' + CLEAR_BONUS + ' bonus! A truly legendary bunny 🏆';
+    } else {
+      endTitle.textContent = "⏰ Time's up!";
+      endCard.classList.remove('win');
+      document.getElementById('endMsg').textContent = flavour(score);
+      sndEnd();
+    }
     draw();
     document.getElementById('finalScore').textContent = score;
     document.getElementById('finalCarrots').textContent =
       eaten + (eaten === 1 ? ' carrot collected' : ' carrots collected');
-    document.getElementById('endMsg').textContent = flavour(score);
     lastResult = { score, carrots: eaten, bunny: bunnyIndex, bunnyName: BUNNIES[bunnyIndex].name };
     document.getElementById('saveRow').style.display = 'flex';
     document.getElementById('nameInput').value = savedName || '';
     refreshEndBoard();
     endScreen.classList.remove('hidden');
+    if (sweptWin) startEndConfetti();
   }
 
   function flavour(s) {
@@ -961,9 +1159,70 @@
     return "Legendary! A truly world-class bunny.";
   }
 
+  // ---------- End-screen background confetti ----------
+  // A dedicated fixed canvas behind the solid card, raining gentle confetti for a
+  // clean-sweep win. Runs its own rAF loop so it is independent of the game loop.
+  const confettiCanvas = document.getElementById('confettiCanvas');
+  const cctx = confettiCanvas.getContext('2d');
+  let endConfetti = [];
+  let endConfettiRAF = null, endConfettiLast = 0, endConfettiSpawn = 0;
+
+  function startEndConfetti() {
+    const rect = confettiCanvas.getBoundingClientRect();
+    confettiCanvas.width = Math.max(1, rect.width * dpr);
+    confettiCanvas.height = Math.max(1, rect.height * dpr);
+    cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    endConfetti = [];
+    for (let i = 0; i < 80; i++) {
+      endConfetti.push(makeConfetti(Math.random() * rect.width, Math.random() * rect.height - rect.height, true));
+    }
+    endConfettiLast = performance.now();
+    endConfettiSpawn = 0;
+    cancelAnimationFrame(endConfettiRAF);
+    endConfettiRAF = requestAnimationFrame(endConfettiLoop);
+  }
+
+  function endConfettiLoop(ts) {
+    const rect = confettiCanvas.getBoundingClientRect();
+    const w = rect.width, h = rect.height;
+    const dt = Math.min((ts - endConfettiLast) / 1000, 0.05);
+    endConfettiLast = ts;
+
+    // keep raining new pieces from just above the top edge
+    endConfettiSpawn -= dt;
+    while (endConfettiSpawn <= 0) {
+      endConfetti.push(makeConfetti(Math.random() * w, -10, true));
+      endConfettiSpawn += 0.04;
+    }
+
+    const G = 150;
+    for (const p of endConfetti) {
+      p.vy += G * dt;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.rot += p.vr * dt;
+      p.life -= dt;
+    }
+    endConfetti = endConfetti.filter(p => p.life > 0 && p.y < h + 20);
+
+    cctx.clearRect(0, 0, w, h);
+    for (const p of endConfetti) drawConfettiPiece(cctx, p);
+    endConfettiRAF = requestAnimationFrame(endConfettiLoop);
+  }
+
+  function stopEndConfetti() {
+    if (endConfettiRAF) { cancelAnimationFrame(endConfettiRAF); endConfettiRAF = null; }
+    endConfetti = [];
+    const rect = confettiCanvas.getBoundingClientRect();
+    cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    cctx.clearRect(0, 0, rect.width, rect.height);
+  }
+
   document.getElementById('startBtn').onclick = startGame;
   document.getElementById('againBtn').onclick = startGame;
   document.getElementById('changeBtn').onclick = () => {
+    stopEndConfetti();
+    endScreen.querySelector('.card').classList.remove('win');
     endScreen.classList.add('hidden');
     startScreen.classList.remove('hidden');
     buildChooser();
