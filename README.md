@@ -19,6 +19,7 @@ And like any good product owner, the moment the first version was up and running
 - **Objective:** collect as many carrots as possible before the timer runs out.
 - **Fresh maze every round:** each game generates a new maze (recursive-backtracker carving with extra walls removed for Pac-Man-style loops), so no two runs are the same.
 - **The golden carrot:** a larger, glowing bonus carrot worth **double points**. It spawns far from you, favours dead-ends, and relocates every few seconds if you don't reach it in time - a risk-reward chase for a higher score.
+- **Clean-sweep bonus:** snatch *every* carrot in the maze and you earn a **+50 bonus** with a party-popper pop and a burst of confetti. The clock keeps running, so you can still chase golden carrots afterward - and a clean sweep gets its own celebration on the end screen.
 - **Two numbers that matter:** _carrots collected_ (the raw count) and _score_ (points). A normal carrot is 1 point; a golden one is 2, so your score can run ahead of your carrot count. The leaderboard ranks by score.
 
 ## Controls
