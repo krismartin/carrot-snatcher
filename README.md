@@ -24,7 +24,7 @@ And like any good product owner, the moment the first version was up and running
 ## Controls
 
 - **Desktop:** Arrow keys or `WASD`.
-- **Mobile:** an on-screen directional pad appears below the maze automatically.
+- **Mobile:** swipe anywhere on the maze to hop that way. A short flick is enough, and diagonal swipes pick whichever direction you moved most.
 
 ## Characters
 
