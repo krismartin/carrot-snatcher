@@ -31,6 +31,7 @@
   html, body {
     margin: 0;
     min-height: 100%;
+    overscroll-behavior: none;
     color: var(--ink);
     background:
       radial-gradient(120% 90% at 50% -10%, #fbfff6 0%, transparent 55%),
@@ -123,7 +124,7 @@
     overflow: hidden;
     box-shadow: 0 12px 30px rgba(34,64,44,0.28), inset 0 0 0 4px rgba(255,255,255,0.35);
   }
-  canvas { display: block; width: 100%; height: 100%; }
+  canvas { display: block; width: 100%; height: 100%; touch-action: none; }
 
   .overlay {
     position: fixed;
@@ -303,31 +304,6 @@
   }
   .board .note { font-size: 11px; color: var(--ink-soft); text-align:center; padding: 8px 0 4px; font-weight:600; }
 
-  /* Touch controls */
-  .dpad {
-    display: none;
-    grid-template-columns: repeat(3, 62px);
-    grid-template-rows: repeat(3, 62px);
-    gap: 8px;
-    margin-top: 6px;
-    touch-action: none;
-  }
-  .dpad button {
-    border: none;
-    border-radius: 16px;
-    background: var(--panel);
-    box-shadow: 0 4px 0 var(--shadow);
-    font-size: 24px;
-    color: var(--hedge-dark);
-    cursor: pointer;
-  }
-  .dpad button:active { transform: translateY(2px); box-shadow: 0 2px 0 var(--shadow); }
-  .dpad .up { grid-column: 2; grid-row: 1; }
-  .dpad .left { grid-column: 1; grid-row: 2; }
-  .dpad .right { grid-column: 3; grid-row: 2; }
-  .dpad .down { grid-column: 2; grid-row: 3; }
-  .dpad .spacer { visibility: hidden; }
-  @media (hover: none) and (pointer: coarse) { .dpad { display: grid; } }
 
   .foot { font-size: 12px; color: var(--ink-soft); font-weight: 600; text-align: center; }
 </style>
@@ -352,7 +328,7 @@
     <div class="overlay" id="startScreen">
       <div class="card">
         <h2>🐰 Ready to hop?</h2>
-        <p>Use <b>arrow keys</b> or <b>WASD</b> to move. On a phone, use the pad below the maze.</p>
+        <p>Use <b>arrow keys</b> or <b>WASD</b> to move. On a phone, <b>swipe</b> anywhere to hop that way. 🐰</p>
         <div class="legend">
           <div><span class="big">🥕</span>Carrot · 1 pt</div>
           <div><span class="big">✨🥕</span>Golden · 2 pts</div>
@@ -381,14 +357,6 @@
         <button class="btn green" id="changeBtn">Change bunny</button>
       </div>
     </div>
-  </div>
-
-  <div class="dpad" id="dpad">
-    <button class="up" data-dir="up">▲</button>
-    <button class="left" data-dir="left">◀</button>
-    <span class="spacer"></span>
-    <button class="right" data-dir="right">▶</button>
-    <button class="down" data-dir="down">▼</button>
   </div>
 
   <div class="board">
@@ -644,11 +612,49 @@
     if (map[e.key]) { e.preventDefault(); setDir(map[e.key]); }
   }, { passive: false });
 
-  document.getElementById('dpad').querySelectorAll('button').forEach(b => {
-    const fire = (e) => { e.preventDefault(); setDir(b.dataset.dir); };
-    b.addEventListener('touchstart', fire, { passive: false });
-    b.addEventListener('mousedown', fire);
-  });
+  // Swipe on the canvas: flick a direction and the buffered turn commits at the
+  // next tile centre, same as the keys. Everything funnels through setDir.
+  const SWIPE_MIN = 24; // px of travel before a flick counts (ignores stray taps)
+  // Track the single finger that started the swipe by its identifier, so a second
+  // touch landing or lifting mid-swipe can't hijack the direction (swipeId is
+  // null when idle; identifiers can be 0, hence the !== null checks).
+  let swipeX = 0, swipeY = 0, swipeId = null;
+  const findTouch = (list, id) => {
+    for (const t of list) if (t.identifier === id) return t;
+    return null;
+  };
+  canvas.addEventListener('touchstart', (e) => {
+    if (swipeId !== null) return; // already tracking a finger; ignore extra touches
+    const t = e.changedTouches[0];
+    swipeX = t.clientX; swipeY = t.clientY; swipeId = t.identifier;
+  }, { passive: true });
+  canvas.addEventListener('touchmove', (e) => {
+    // Keep the page from scrolling while a swipe is in progress.
+    if (swipeId !== null) e.preventDefault();
+  }, { passive: false });
+  canvas.addEventListener('touchend', (e) => {
+    if (swipeId === null) return;
+    const t = findTouch(e.changedTouches, swipeId);
+    if (!t) return; // a different finger lifted; keep waiting for ours
+    swipeId = null;
+    const dx = t.clientX - swipeX, dy = t.clientY - swipeY;
+    // Resolve to the dominant axis so a diagonal flick is never ambiguous.
+    if (Math.max(Math.abs(dx), Math.abs(dy)) < SWIPE_MIN) return;
+    if (Math.abs(dx) > Math.abs(dy)) setDir(dx > 0 ? 'right' : 'left');
+    else setDir(dy > 0 ? 'down' : 'up');
+  }, { passive: false });
+  canvas.addEventListener('touchcancel', (e) => {
+    // System interruption (call, gesture) on our finger: drop the swipe cleanly.
+    if (swipeId !== null && findTouch(e.changedTouches, swipeId)) swipeId = null;
+  }, { passive: true });
+
+  // While a round is live the whole screen is the game surface, so no touch
+  // anywhere should scroll the page — even a swipe that starts in the margin
+  // outside the maze. (overscroll-behavior only stops the edge bounce, not a
+  // normal scroll.) Menus and the leaderboard still scroll freely when idle.
+  document.addEventListener('touchmove', (e) => {
+    if (running) e.preventDefault();
+  }, { passive: false });
 
   // ---------- Update ----------
   function update(dt) {
