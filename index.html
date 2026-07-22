@@ -1289,7 +1289,7 @@
       boardNote.textContent = 'Scores are saved and visible to everyone who plays this game.';
     } else {
       list = memBoard;
-      boardNote.textContent = 'Running outside Claude — scores are kept only for this session.';
+      boardNote.textContent = 'Scores are kept just for this session and reset when you reload.';
     }
     return Array.isArray(list) ? list : [];
   }
