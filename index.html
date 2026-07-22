@@ -1166,15 +1166,26 @@
   const cctx = confettiCanvas.getContext('2d');
   let endConfetti = [];
   let endConfettiRAF = null, endConfettiLast = 0, endConfettiSpawn = 0;
+  let endW = 0, endH = 0;   // CSS-px size of the confetti canvas, cached to avoid per-frame layout reads
 
-  function startEndConfetti() {
+  // Measure and size the canvas. Called on start and on resize (the fixed overlay
+  // can change size on orientation change), so the cached endW/endH never drift
+  // from the layout and the backing store never gets rescaled/stretched.
+  function sizeEndConfetti() {
     const rect = confettiCanvas.getBoundingClientRect();
     confettiCanvas.width = Math.max(1, rect.width * dpr);
     confettiCanvas.height = Math.max(1, rect.height * dpr);
     cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    endW = confettiCanvas.width / dpr; endH = confettiCanvas.height / dpr;
+  }
+  // Re-measure only while the celebration is on screen; harmless no-op otherwise.
+  window.addEventListener('resize', () => { if (endConfettiRAF) sizeEndConfetti(); });
+
+  function startEndConfetti() {
+    sizeEndConfetti();
     endConfetti = [];
     for (let i = 0; i < 80; i++) {
-      endConfetti.push(makeConfetti(Math.random() * rect.width, Math.random() * rect.height - rect.height, true));
+      endConfetti.push(makeConfetti(Math.random() * endW, Math.random() * endH - endH, true));
     }
     endConfettiLast = performance.now();
     endConfettiSpawn = 0;
@@ -1183,8 +1194,9 @@
   }
 
   function endConfettiLoop(ts) {
-    const rect = confettiCanvas.getBoundingClientRect();
-    const w = rect.width, h = rect.height;
+    // Use the size captured in startEndConfetti — reading getBoundingClientRect()
+    // here would force a layout reflow on every animation frame.
+    const w = endW, h = endH;
     const dt = Math.min((ts - endConfettiLast) / 1000, 0.05);
     endConfettiLast = ts;
 
@@ -1213,9 +1225,8 @@
   function stopEndConfetti() {
     if (endConfettiRAF) { cancelAnimationFrame(endConfettiRAF); endConfettiRAF = null; }
     endConfetti = [];
-    const rect = confettiCanvas.getBoundingClientRect();
     cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    cctx.clearRect(0, 0, rect.width, rect.height);
+    cctx.clearRect(0, 0, endW, endH);
   }
 
   document.getElementById('startBtn').onclick = startGame;
