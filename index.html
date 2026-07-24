@@ -516,6 +516,15 @@
 
   // ---------- Sound (WebAudio) ----------
   let actx = null, musicGain = null, sfxGain = null;
+
+  // Wake the audio context whenever it isn't running. 
+  function resumeAudio() {
+    if (actx && actx.state !== 'running') {
+      const p = actx.resume();
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+    }
+  }
+
   function ensureAudio() {
     if (!actx) {
       actx = new (window.AudioContext || window.webkitAudioContext)();
@@ -525,10 +534,18 @@
       sfxGain = actx.createGain();
       sfxGain.gain.value = 1;
       sfxGain.connect(actx.destination);
+      actx.addEventListener('statechange', resumeAudio);
     }
-    if (actx.state === 'suspended') actx.resume();
+    resumeAudio();
     return actx;
   }
+
+  // also wake the context when the tab becomes visible again
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') resumeAudio();
+  });
+  ['pointerdown', 'keydown', 'touchstart'].forEach(ev =>
+    window.addEventListener(ev, resumeAudio, { passive: true }));
 
   function beep(freq, dur, type = 'sine', vol = 0.12) {
     if (muted) return;

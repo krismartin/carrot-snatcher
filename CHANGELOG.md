@@ -4,6 +4,16 @@ All notable changes to Carrot Snatcher are recorded here, newest first.
 The format follows [Keep a Changelog](https://keepachangelog.com/); this project
 has no formal releases yet, so entries are grouped by the date they landed.
 
+## 2026-07-24
+
+### Fixed
+- Audio no longer goes silent after an idle spell. Safari/WebKit parks an idle
+  audio context in the non-standard `interrupted` state (not just `suspended`),
+  which the old resume check missed — so starting a new round after lingering on
+  the leaderboard came up with no music or sound effects. The context is now
+  revived whenever it isn't `running`, plus on tab refocus and the next
+  interaction. ([#4](https://github.com/krismartin/carrot-snatcher/pull/4))
+
 ## 2026-07-22
 
 ### Added
