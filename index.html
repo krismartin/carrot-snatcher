@@ -203,6 +203,31 @@
   .swatch.sel span { color: var(--carrot); }
   .swatch:active { transform: translateY(1px); }
 
+  /* Difficulty chooser: same pill language as the bunny swatches, but wider so
+     each mode can carry a one-line explanation of what it changes. */
+  .modes { display: flex; gap: 8px; justify-content: center; margin: 6px 0 2px; flex-wrap: wrap; }
+  .mode {
+    font-family: 'Nunito', sans-serif;
+    border: 2px solid rgba(58,125,68,0.2);
+    background: #ffffff;
+    border-radius: 14px;
+    padding: 7px 12px 6px;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1px;
+    min-width: 132px;
+    font-weight: 800;
+    font-size: 14px;
+    color: var(--ink-soft);
+    transition: transform .05s, border-color .1s, background .1s;
+  }
+  .mode .big { font-size: 21px; line-height: 1.1; }
+  .mode small { font-weight: 700; font-size: 10.5px; opacity: 0.85; }
+  .mode.sel { border-color: var(--carrot); background: #fff6ec; color: var(--carrot); }
+  .mode:active { transform: translateY(1px); }
+
   .btn {
     font-family: 'Fredoka', sans-serif;
     font-weight: 600;
@@ -304,7 +329,11 @@
     color: var(--ink-soft);
   }
   .row:nth-child(1) .rank { color: var(--gold-deep); }
-  .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* The name truncates, but the hard-mode badge must never be the thing that
+     gets clipped — so it sits outside the ellipsing text and never shrinks. */
+  .name { display: flex; align-items: center; gap: 5px; min-width: 0; }
+  .nametext { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hardbadge { font-size: 12px; flex: none; }
   .carr { font-size: 13px; color: var(--ink-soft); }
   .pts {
     font-family: 'Fredoka', sans-serif;
@@ -323,7 +352,7 @@
 <div class="wrap">
   <header>
     <h1 class="title">Carrot <span class="veg">Snatcher</span></h1>
-    <p class="subtitle">Guide the bunny through the hedge maze and grab every carrot before the clock runs out</p>
+    <p class="subtitle" id="subtitle">Guide the bunny through the hedge maze and grab every carrot before the clock runs out</p>
   </header>
 
   <div class="hud">
@@ -343,9 +372,13 @@
         <div class="legend">
           <div><span class="big">🥕</span>Carrot · 1 pt</div>
           <div><span class="big">✨🥕</span>Golden · 2 pts</div>
+          <div id="farmerLegend"><span class="big">🧑‍🌾</span>Farmer · run!</div>
         </div>
         <p>The <b>golden carrot</b> glows, hides far away, and keeps moving — snag it fast for double points.</p>
+        <p id="farmerHelp">The <b>farmer</b> naps for a few seconds, then hunts you through the hedges — and gets quicker as the clock runs down. Let him catch you and he'll pinch <b>5 of your carrots</b> before stomping off to the far side of the maze. He's slower than you, so keep hopping!</p>
         <p>Clear the whole maze for a 🎉 <b>clean-sweep bonus</b>!</p>
+        <p style="margin-bottom:2px"><b>Choose your challenge</b></p>
+        <div class="modes" id="modes"></div>
         <p style="margin-bottom:2px"><b>Pick your bunny</b></p>
         <div class="chooser" id="chooser"></div>
         <button class="btn" id="startBtn">Start hopping</button>
@@ -396,6 +429,18 @@
   const BONUS_RESPAWN = 1.6;           // delay after collecting
   const SPEED = 5.4 * TILE;            // px/sec
 
+  // ---------- The farmer ----------
+  // He hunts the bunny down the shortest path through the hedges, but he is
+  // slower than a bunny and takes the odd wrong turn, so he is escapable.
+  const FARMER_SLOW = 0.62 * SPEED;    // his pace at the start of the round
+  const FARMER_FAST = 0.88 * SPEED;    // his pace once the clock has run down
+  const FARMER_GRACE = 3.5;            // head start before he sets off
+  const FARMER_STUN = 1.5;             // he pauses after a catch
+  const FARMER_WANDER = 0.18;          // chance of a non-optimal turn at a junction
+  const CATCH_STEAL = 5;               // carrots he pockets when he catches you
+  const CATCH_INVULN = 2.0;            // safe time after being caught
+  const CATCH_DIST = TILE * 0.62;      // how close he has to get
+
   // Selectable bunny characters (drawn as vectors so each can be a different colour)
   const BUNNIES = [
     { name: 'Snowball', fur: '#f6f2ea', outline: '#cbc4b6', ear: '#f3b6c6' },
@@ -406,6 +451,14 @@
     { name: 'Midnight', fur: '#4a4a56', outline: '#2b2b33', ear: '#d98fa5' },
   ];
   let bunnyIndex = 0;
+
+  // Difficulty. Easy is the game exactly as it was before the farmer existed;
+  // hard adds him. Chosen on the start screen and kept between rounds.
+  const MODES = [
+    { hard: false, icon: '🐰',   name: 'Easy', note: 'Just you and the carrots' },
+    { hard: true,  icon: '🧑‍🌾', name: 'Hard', note: 'The farmer hunts you' },
+  ];
+  let hardMode = false;
 
   // ---------- Canvas ----------
   const canvas = document.getElementById('game');
@@ -461,6 +514,13 @@
   let bonus = null;                 // {x, y, until} or null
   let bonusTimer = 0;
   let bunny;                        // {px, py, dir, next}
+  let farmer;                       // {px, py, tx, ty, dir, frozen, walk, facingLeft}
+  let invuln = 0;                   // safe time left after being caught
+  let caughtFlash = 0;              // life timer for the red flash + "CAUGHT!" banner
+  let caughtCount = 0;              // times the farmer got you this round
+  let stolen = 0;                   // carrots he has taken off you this round
+  let lastSteal = 0;                // size of the most recent haul, for the banner
+  let distField = null, distKey = ''; // cached BFS distances to the bunny's tile
   let score = 0, eaten = 0, timeLeft = GAME_SECONDS;
   let running = false, lastTs = 0;
   let hopPhase = 0;                 // bounce animation
@@ -481,11 +541,54 @@
         if (grid[y][x] === 0 && !(x === 1 && y === 1)) carrots.add(key(x, y));
 
     bunny = { px: 1 * TILE + TILE/2, py: 1 * TILE + TILE/2, dir: null, next: null, tx: 1, ty: 1 };
+    distField = null; distKey = '';   // stale field from the previous maze
+    // In easy mode there is no farmer at all — everything downstream keys off this.
+    if (hardMode) placeFarmer(1, 1, FARMER_GRACE); else farmer = null;
+    invuln = 0; caughtFlash = 0; caughtCount = 0; stolen = 0; lastSteal = 0;
     score = 0; eaten = 0; timeLeft = GAME_SECONDS;
     sparkle = [];
     confetti = []; swept = false; sweptWin = false; sweepBanner = 0;
     bonus = null; bonusTimer = BONUS_RESPAWN;
     updateHud();
+  }
+
+  // ---------- Pathfinding ----------
+  // Flood the maze from a tile, giving every reachable tile its step distance
+  // (-1 where unreachable). Cheap on a 21x21 grid.
+  function bfsFrom(sx, sy) {
+    const d = Array.from({length: ROWS}, () => Array(COLS).fill(-1));
+    if (!isPath(sx, sy)) return d;
+    d[sy][sx] = 0;
+    const q = [[sx, sy]];
+    for (let i = 0; i < q.length; i++) {
+      const [x, y] = q[i];
+      for (const [dx, dy] of [[0,-1],[0,1],[-1,0],[1,0]]) {
+        const nx = x + dx, ny = y + dy;
+        if (isPath(nx, ny) && d[ny][nx] === -1) { d[ny][nx] = d[y][x] + 1; q.push([nx, ny]); }
+      }
+    }
+    return d;
+  }
+
+  // Distances to the bunny, recomputed only when it moves to a new tile.
+  function bunnyDist() {
+    const k = key(bunny.tx, bunny.ty);
+    if (distKey !== k || !distField) { distField = bfsFrom(bunny.tx, bunny.ty); distKey = k; }
+    return distField;
+  }
+
+  // Drop the farmer on the tile furthest (by path, not line of sight) from the
+  // given one, so he always starts the chase on the far side of the maze.
+  function placeFarmer(tx, ty, grace) {
+    const d = bfsFrom(tx, ty);
+    let best = null, bd = -1;
+    for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) {
+      if (grid[y][x] !== 0 || d[y][x] <= bd) continue;
+      bd = d[y][x]; best = { x, y };
+    }
+    if (!best) best = { x: tx, y: ty };
+    farmer = { px: best.x*TILE + TILE/2, py: best.y*TILE + TILE/2, tx: best.x, ty: best.y,
+               dir: null, frozen: grace, walk: 0, facingLeft: false };
   }
 
   // ---------- Bonus carrot placement (far from bunny, prefers dead-ends) ----------
@@ -562,6 +665,8 @@
   const sndCarrot = () => beep(660, 0.09, 'square', 0.08);
   const sndBonus  = () => { beep(880, 0.12, 'triangle', 0.14); setTimeout(() => beep(1180, 0.14, 'triangle', 0.14), 90); };
   const sndEnd    = () => { beep(392, 0.18, 'sine', 0.14); setTimeout(() => beep(294, 0.28, 'sine', 0.14), 160); };
+  // A grumpy descending "oi!" when the farmer grabs you.
+  const sndCaught = () => { beep(233, 0.16, 'sawtooth', 0.12); setTimeout(() => beep(147, 0.30, 'sawtooth', 0.12), 110); };
 
   // A short buffer of white noise, used for the pop crack and the fizz tail.
   function noiseBuffer(dur) {
@@ -700,6 +805,7 @@
 
   // ---------- Input ----------
   const dirVec = { up:[0,-1], down:[0,1], left:[-1,0], right:[1,0] };
+  const OPPOSITE = { up:'down', down:'up', left:'right', right:'left' };
   function setDir(d) { if (running) bunny.next = d; }
 
   window.addEventListener('keydown', (e) => {
@@ -758,6 +864,11 @@
   // ---------- Update ----------
   function update(dt) {
     moveBunny(SPEED * dt);
+
+    // the chase (hard mode only)
+    if (invuln > 0) invuln = Math.max(0, invuln - dt);
+    if (caughtFlash > 0) caughtFlash = Math.max(0, caughtFlash - dt);
+    if (farmer) updateFarmer(dt);
 
     // bonus lifecycle
     bonusTimer -= dt;
@@ -846,6 +957,103 @@
 
   function addSparkle(tx, ty, color, big) {
     sparkle.push({ x: tx*TILE + TILE/2, y: ty*TILE + TILE/2, r: big ? 8 : 4, life: 0.45, color, big });
+  }
+
+  // ---------- The chase ----------
+  // He speeds up as the round wears on, so the last few seconds are the tensest.
+  function farmerSpeed() {
+    const gone = 1 - Math.max(0, timeLeft) / GAME_SECONDS;
+    return FARMER_SLOW + (FARMER_FAST - FARMER_SLOW) * gone;
+  }
+
+  function updateFarmer(dt) {
+    if (farmer.frozen > 0) farmer.frozen = Math.max(0, farmer.frozen - dt);
+    else moveFarmer(farmerSpeed() * dt);
+    checkCatch();
+  }
+
+  // Same tile-locked, overshoot-proof stepping as the bunny, but the direction
+  // is decided by the AI at every tile centre instead of by the player.
+  function moveFarmer(dist) {
+    const f = farmer;
+    let guard = 0;
+    while (dist > 1e-6 && guard++ < 200) {
+      if (!f.dir) {
+        f.px = f.tx * TILE + TILE/2;
+        f.py = f.ty * TILE + TILE/2;
+        if (!aimFarmer()) break;
+      }
+      const [vx, vy] = dirVec[f.dir];
+      const targX = (f.tx + vx) * TILE + TILE/2;
+      const targY = (f.ty + vy) * TILE + TILE/2;
+      const remaining = Math.abs(targX - f.px) + Math.abs(targY - f.py);
+      const step = Math.min(dist, remaining);
+      f.px += vx * step;
+      f.py += vy * step;
+      dist -= step;
+      f.walk += step * 0.22;
+
+      if (step >= remaining - 1e-6) {
+        f.px = targX; f.py = targY;
+        f.tx += vx; f.ty += vy;
+        // arrived — pick the next leg of the chase (and stop if boxed in)
+        if (!aimFarmer()) break;
+        // a catch mid-frame ends this move: he has been sent back across the maze
+        checkCatch();
+        if (f !== farmer) break;
+      }
+    }
+  }
+
+  // Points the farmer down whichever open neighbour is closest to the bunny,
+  // with a dash of wandering and no doubling back unless it is the only way out.
+  function aimFarmer() {
+    const f = farmer;
+    const d = bunnyDist();
+    const opts = [];
+    for (const name in dirVec) {
+      const [vx, vy] = dirVec[name];
+      const nx = f.tx + vx, ny = f.ty + vy;
+      if (!isPath(nx, ny)) continue;
+      opts.push({ name, d: d[ny][nx] < 0 ? Infinity : d[ny][nx] });
+    }
+    if (!opts.length) { f.dir = null; return false; }
+    const back = f.dir ? OPPOSITE[f.dir] : null;
+    const ahead = opts.filter(o => o.name !== back);
+    const pool = ahead.length ? ahead : opts;
+    let pick;
+    if (pool.length > 1 && Math.random() < FARMER_WANDER) {
+      pick = pool[(Math.random() * pool.length) | 0];
+    } else {
+      pick = pool[0];
+      for (const o of pool) if (o.d < pick.d) pick = o;
+    }
+    f.dir = pick.name;
+    if (f.dir === 'left') f.facingLeft = true;
+    else if (f.dir === 'right') f.facingLeft = false;
+    return true;
+  }
+
+  function checkCatch() {
+    if (!running || invuln > 0 || farmer.frozen > 0) return;
+    const dx = farmer.px - bunny.px, dy = farmer.py - bunny.py;
+    if (dx*dx + dy*dy <= CATCH_DIST*CATCH_DIST) caught();
+  }
+
+  // Caught: the farmer pockets a handful of your carrots and stomps back to the
+  // far side of the maze. The bunny keeps its place and hops straight on.
+  function caught() {
+    caughtCount++;
+    lastSteal = Math.min(CATCH_STEAL, eaten);
+    eaten -= lastSteal;
+    score = Math.max(0, score - lastSteal);
+    stolen += lastSteal;
+    invuln = CATCH_INVULN;
+    caughtFlash = 1.6;
+    sndCaught();
+    addSparkle(bunny.tx, bunny.ty, '#ef7d1a', true);
+    placeFarmer(bunny.tx, bunny.ty, FARMER_STUN);
+    updateHud();
   }
 
   // ---------- Clean-sweep celebration ----------
@@ -980,7 +1188,8 @@
       ctx.globalAlpha = 1;
     }
 
-    // bunny
+    // the chase — farmer behind the bunny so the player is never hidden
+    if (farmer) drawFarmer();
     drawBunny();
 
     // clean-sweep confetti, over the now-empty maze but under the vignette
@@ -990,24 +1199,16 @@
     }
     ctx.globalAlpha = 1;
 
-    // floating "CLEAN SWEEP!" banner: pops in (scale) then fades out
-    if (sweepBanner > 0) {
-      const elapsed = 2.0 - sweepBanner;
-      const pop = Math.min(1, elapsed / 0.22);
-      const scale = 0.5 + 0.5 * (1 - Math.pow(1 - pop, 3));
-      ctx.save();
-      ctx.globalAlpha = Math.min(1, sweepBanner / 0.5);
-      ctx.translate(W / 2, H * 0.32);
-      ctx.scale(scale, scale);
-      ctx.font = "700 " + (TILE | 0) + "px 'Fredoka', sans-serif";
-      ctx.lineWidth = 6;
-      ctx.lineJoin = 'round';
-      ctx.strokeStyle = 'rgba(20,40,25,0.85)';
-      ctx.fillStyle = getVar('--gold');
-      const msg = '🎉 CLEAN SWEEP! +' + CLEAR_BONUS;
-      ctx.strokeText(msg, 0, 0);
-      ctx.fillText(msg, 0, 0);
-      ctx.restore();
+    // red wash the moment the farmer grabs you
+    if (caughtFlash > 0) {
+      ctx.fillStyle = 'rgba(190,45,35,' + Math.min(0.28, caughtFlash * 0.22) + ')';
+      ctx.fillRect(0, 0, W, H);
+    }
+
+    if (sweepBanner > 0) drawBanner('🎉 CLEAN SWEEP! +' + CLEAR_BONUS, sweepBanner, 2.0, getVar('--gold'), 0.32);
+    if (caughtFlash > 0) {
+      const msg = lastSteal ? '🧑‍🌾 CAUGHT! −' + lastSteal + ' 🥕' : '🧑‍🌾 CAUGHT! Empty pockets!';
+      drawBanner(msg, caughtFlash, 1.6, '#ffd9c2', 0.62);
     }
 
     // vignette
@@ -1031,18 +1232,149 @@
     ctx.globalAlpha = 1;
   }
 
-  function drawBunny() {
-    const b = bunny;
-    const bounce = b.dir ? Math.abs(Math.sin(hopPhase)) * 3 : 0;
-    // shadow
+  // A floating message that pops in then fades out (clean sweep, caught).
+  function drawBanner(msg, life, total, fill, yFrac) {
+    const pop = Math.min(1, (total - life) / 0.22);
+    const scale = 0.5 + 0.5 * (1 - Math.pow(1 - pop, 3));
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, life / 0.5);
+    ctx.translate(W / 2, H * yFrac);
+    ctx.scale(scale, scale);
+    ctx.font = "700 " + (TILE | 0) + "px 'Fredoka', sans-serif";
+    ctx.lineWidth = 6;
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = 'rgba(20,40,25,0.85)';
+    ctx.fillStyle = fill;
+    ctx.strokeText(msg, 0, 0);
+    ctx.fillText(msg, 0, 0);
+    ctx.restore();
+  }
+
+  function shadow(x, y, rx, ry) {
     ctx.save();
     ctx.globalAlpha = 0.25;
     ctx.fillStyle = '#1c3524';
     ctx.beginPath();
-    ctx.ellipse(b.px, b.py + TILE*0.34, TILE*0.28, TILE*0.11, 0, 0, Math.PI*2);
+    ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI*2);
     ctx.fill();
     ctx.restore();
+  }
+
+  function drawBunny() {
+    const b = bunny;
+    const bounce = b.dir ? Math.abs(Math.sin(hopPhase)) * 3 : 0;
+    ctx.save();
+    // blink while safe after a catch
+    if (invuln > 0) ctx.globalAlpha = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(performance.now() / 55));
+    shadow(b.px, b.py + TILE*0.34, TILE*0.28, TILE*0.11);
     renderBunny(ctx, b.px, b.py - bounce, TILE*0.95, BUNNIES[bunnyIndex], b.dir === 'left');
+    ctx.restore();
+  }
+
+  function drawFarmer() {
+    const f = farmer;
+    // a warning glow once he is a few tiles away and closing
+    const d = bunnyDist()[f.ty][f.tx];
+    if (!f.frozen && d >= 0 && d <= 5) {
+      const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 130);
+      const g = ctx.createRadialGradient(f.px, f.py, 2, f.px, f.py, TILE * 1.1);
+      g.addColorStop(0, 'rgba(214,60,45,' + (0.16 + 0.16 * pulse) * (1 - d / 6) + ')');
+      g.addColorStop(1, 'rgba(214,60,45,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(f.px, f.py, TILE * 1.1, 0, Math.PI*2); ctx.fill();
+    }
+    const bob = f.frozen ? 0 : Math.abs(Math.sin(f.walk)) * 2;
+    shadow(f.px, f.py + TILE*0.42, TILE*0.3, TILE*0.11);
+    renderFarmer(ctx, f.px, f.py - bob, TILE, f.facingLeft, f.walk, !!f.frozen);
+    if (f.frozen > 0) {
+      ctx.font = (TILE*0.42|0) + 'px serif';
+      ctx.fillText('💤', f.px + TILE*0.42, f.py - TILE*0.62);
+    }
+  }
+
+  // The farmer: straw hat, overalls, and a pitchfork — drawn as vectors in the
+  // same style as the bunny so the two read as part of the same world.
+  function renderFarmer(c, cx, cy, s, facingLeft, walk, resting) {
+    const swing = resting ? 0 : Math.sin(walk) * s * 0.09;
+    c.save();
+    c.translate(cx, cy);
+    if (facingLeft) c.scale(-1, 1);
+    c.lineJoin = 'round';
+    c.lineCap = 'round';
+
+    // pitchfork, carried out in front
+    c.strokeStyle = '#a9762f';
+    c.lineWidth = Math.max(1, s * 0.055);
+    c.beginPath(); c.moveTo(s*0.30, s*0.40); c.lineTo(s*0.34, -s*0.28); c.stroke();
+    c.strokeStyle = '#b9c3cc';
+    c.lineWidth = Math.max(1, s * 0.035);
+    c.beginPath(); c.moveTo(s*0.26, -s*0.28); c.lineTo(s*0.42, -s*0.28); c.stroke();
+    for (const dx of [-0.07, 0, 0.07]) {
+      c.beginPath(); c.moveTo(s*(0.34+dx), -s*0.28); c.lineTo(s*(0.34+dx), -s*0.44); c.stroke();
+    }
+
+    c.strokeStyle = '#4a3a28';
+    c.lineWidth = Math.max(1, s * 0.04);
+
+    // boots
+    c.fillStyle = '#5a4632';
+    bEllipse(c, -s*0.10 + swing, s*0.37, s*0.085, s*0.075, 0, true, true);
+    bEllipse(c,  s*0.10 - swing, s*0.37, s*0.085, s*0.075, 0, true, true);
+    // shirt sleeves
+    c.fillStyle = '#e2554a';
+    bEllipse(c, -s*0.23, s*0.03, s*0.075, s*0.085, 0.35, true, true);
+    bEllipse(c,  s*0.23, s*0.03, s*0.075, s*0.085, -0.35, true, true);
+    // dungarees
+    c.fillStyle = '#4a6ea3';
+    roundRectPath(c, -s*0.19, -s*0.06, s*0.38, s*0.40, s*0.10);
+    c.fill(); c.stroke();
+    // bib straps
+    c.strokeStyle = '#35527e';
+    c.lineWidth = Math.max(1, s * 0.05);
+    c.beginPath();
+    c.moveTo(-s*0.12, -s*0.05); c.lineTo(-s*0.08, -s*0.14);
+    c.moveTo( s*0.12, -s*0.05); c.lineTo( s*0.08, -s*0.14);
+    c.stroke();
+    // head
+    c.strokeStyle = '#4a3a28';
+    c.lineWidth = Math.max(1, s * 0.04);
+    c.fillStyle = '#f0c39a';
+    bEllipse(c, 0, -s*0.19, s*0.175, s*0.165, 0, true, true);
+    // eyes — cross when he is on the hunt, closed while he dozes
+    c.strokeStyle = '#2a2f36';
+    c.lineWidth = Math.max(1, s * 0.035);
+    if (resting) {
+      c.beginPath();
+      c.moveTo(-s*0.11, -s*0.21); c.quadraticCurveTo(-s*0.07, -s*0.17, -s*0.03, -s*0.21);
+      c.moveTo( s*0.03, -s*0.21); c.quadraticCurveTo( s*0.07, -s*0.17,  s*0.11, -s*0.21);
+      c.stroke();
+    } else {
+      c.fillStyle = '#2a2f36';
+      bEllipse(c, -s*0.07, -s*0.21, s*0.026, s*0.032, 0, true, false);
+      bEllipse(c,  s*0.07, -s*0.21, s*0.026, s*0.032, 0, true, false);
+      // furrowed brow
+      c.beginPath();
+      c.moveTo(-s*0.12, -s*0.29); c.lineTo(-s*0.03, -s*0.25);
+      c.moveTo( s*0.12, -s*0.29); c.lineTo( s*0.03, -s*0.25);
+      c.stroke();
+    }
+    // moustache
+    c.strokeStyle = '#8a6a45';
+    c.lineWidth = Math.max(1, s * 0.05);
+    c.beginPath();
+    c.moveTo(-s*0.09, -s*0.11); c.quadraticCurveTo(0, -s*0.06, s*0.09, -s*0.11);
+    c.stroke();
+    // straw hat: crown, band, then brim in front. Worn high enough that the
+    // scowl underneath still reads.
+    c.strokeStyle = '#b7913c';
+    c.lineWidth = Math.max(1, s * 0.035);
+    c.fillStyle = '#e8c46a';
+    bEllipse(c, 0, -s*0.45, s*0.155, s*0.115, 0, true, true);
+    c.fillStyle = '#8c5a3c';
+    c.fillRect(-s*0.145, -s*0.415, s*0.29, s*0.032);
+    c.fillStyle = '#e8c46a';
+    bEllipse(c, 0, -s*0.37, s*0.30, s*0.075, 0, true, true);
+    c.restore();
   }
 
   // Draws a cute bunny of any colour onto the given 2D context.
@@ -1083,15 +1415,16 @@
     c.restore();
   }
 
-  function roundRect(x, y, w, h, r) {
-    ctx.beginPath();
-    ctx.moveTo(x+r, y);
-    ctx.arcTo(x+w, y, x+w, y+h, r);
-    ctx.arcTo(x+w, y+h, x, y+h, r);
-    ctx.arcTo(x, y+h, x, y, r);
-    ctx.arcTo(x, y, x+w, y, r);
-    ctx.closePath();
+  function roundRectPath(c, x, y, w, h, r) {
+    c.beginPath();
+    c.moveTo(x+r, y);
+    c.arcTo(x+w, y, x+w, y+h, r);
+    c.arcTo(x+w, y+h, x, y+h, r);
+    c.arcTo(x, y+h, x, y, r);
+    c.arcTo(x, y, x+w, y, r);
+    c.closePath();
   }
+  const roundRect = (x, y, w, h, r) => roundRectPath(ctx, x, y, w, h, r);
 
   const varCache = {};
   function getVar(name) {
@@ -1149,23 +1482,32 @@
       endTitle.textContent = '🎉 Clean sweep!';
       endCard.classList.add('win');
       document.getElementById('endMsg').textContent =
-        'Every carrot snatched — +' + CLEAR_BONUS + ' bonus! A truly legendary bunny 🏆';
+        'Every carrot snatched — +' + CLEAR_BONUS + ' bonus! A truly legendary bunny 🏆' + caughtNote();
     } else {
       endTitle.textContent = "⏰ Time's up!";
       endCard.classList.remove('win');
-      document.getElementById('endMsg').textContent = flavour(score);
+      document.getElementById('endMsg').textContent = flavour(score) + caughtNote();
       sndEnd();
     }
     draw();
     document.getElementById('finalScore').textContent = score;
     document.getElementById('finalCarrots').textContent =
       eaten + (eaten === 1 ? ' carrot collected' : ' carrots collected');
-    lastResult = { score, carrots: eaten, bunny: bunnyIndex, bunnyName: BUNNIES[bunnyIndex].name };
+    lastResult = { score, carrots: eaten, bunny: bunnyIndex, bunnyName: BUNNIES[bunnyIndex].name, hard: hardMode };
     document.getElementById('saveRow').style.display = 'flex';
     document.getElementById('nameInput').value = savedName || '';
     refreshEndBoard();
     endScreen.classList.remove('hidden');
     if (sweptWin) startEndConfetti();
+  }
+
+  function caughtNote() {
+    if (!hardMode) return '';
+    if (!caughtCount) return ' 🧑‍🌾 The farmer never laid a finger on you!';
+    const times = caughtCount === 1 ? 'once' : caughtCount + ' times';
+    if (!stolen) return ' 🧑‍🌾 The farmer caught you ' + times + ', but your pockets were empty!';
+    return ' 🧑‍🌾 The farmer caught you ' + times + ' and made off with ' +
+           stolen + (stolen === 1 ? ' carrot.' : ' carrots.');
   }
 
   function flavour(s) {
@@ -1254,6 +1596,7 @@
     endScreen.classList.add('hidden');
     startScreen.classList.remove('hidden');
     buildChooser();
+    buildModes();
   };
 
   // mute
@@ -1277,6 +1620,34 @@
       btn.onclick = () => { bunnyIndex = i; buildChooser(); beep(560, 0.05, 'square', 0.05); };
       chooser.appendChild(btn);
     });
+  }
+
+  // ---------- Difficulty chooser ----------
+  // Picking a mode also shows/hides the farmer's rules, so the easy-mode start
+  // screen reads exactly like the game did before he arrived.
+  const modesEl = document.getElementById('modes');
+  const farmerHelp = document.getElementById('farmerHelp');
+  const farmerLegend = document.getElementById('farmerLegend');
+  const subtitleEl = document.getElementById('subtitle');
+  const SUBTITLE = subtitleEl.textContent;
+  const SUBTITLE_HARD = ' — with a farmer on your tail, if you dare';
+  function buildModes() {
+    modesEl.innerHTML = '';
+    for (const m of MODES) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'mode' + (m.hard === hardMode ? ' sel' : '');
+      const icon = document.createElement('span');
+      icon.className = 'big'; icon.textContent = m.icon;
+      const note = document.createElement('small');
+      note.textContent = m.note;
+      btn.append(icon, m.name, note);
+      btn.onclick = () => { hardMode = m.hard; buildModes(); beep(m.hard ? 420 : 620, 0.06, 'square', 0.05); };
+      modesEl.appendChild(btn);
+    }
+    farmerHelp.style.display = hardMode ? '' : 'none';
+    farmerLegend.style.display = hardMode ? '' : 'none';
+    subtitleEl.textContent = SUBTITLE + (hardMode ? SUBTITLE_HARD : '');
   }
 
   const muteBtn = document.getElementById('muteBtn');
@@ -1303,17 +1674,17 @@
         const res = await window.storage.get(LB_KEY, true);
         if (res && res.value) list = JSON.parse(res.value);
       } catch (e) { list = []; }
-      boardNote.textContent = 'Scores are saved and visible to everyone who plays this game.';
+      boardNote.textContent = 'Scores are saved and visible to everyone who plays this game. 🔥 = set on hard mode.';
     } else {
       list = memBoard;
-      boardNote.textContent = 'Scores are kept just for this session and reset when you reload.';
+      boardNote.textContent = 'Scores are kept just for this session and reset when you reload. 🔥 = set on hard mode.';
     }
     return Array.isArray(list) ? list : [];
   }
 
   async function saveScore(name, result) {
     const entry = { name: name.slice(0, 14), score: result.score, carrots: result.carrots,
-                    bunny: result.bunny, bunnyName: result.bunnyName, at: Date.now() };
+                    bunny: result.bunny, bunnyName: result.bunnyName, hard: !!result.hard, at: Date.now() };
     let list = await loadBoard();
     list.push(entry);
     list.sort((a, b) => b.score - a.score || b.carrots - a.carrots || a.at - b.at);
@@ -1359,7 +1730,7 @@
       return `<div class="row ${isMe ? 'me' : ''}">
         <div class="rank">${rank}</div>
         <img class="bico" src="${icon}" alt="" />
-        <div class="name">${escapeHtml(e.name || 'Bunny')}</div>
+        <div class="name"><span class="nametext">${escapeHtml(e.name || 'Bunny')}</span>${e.hard ? '<span class="hardbadge" title="Hard mode">🔥</span>' : ''}</div>
         <div class="carr">🥕 ${e.carrots}</div>
         <div class="pts">${e.score}</div>
       </div>`;
@@ -1400,6 +1771,7 @@
     genMaze();
     resetGame();
     buildChooser();
+    buildModes();
     draw();
     const list = await loadBoard();
     renderBoard(list);
